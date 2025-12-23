@@ -1,89 +1,49 @@
-apiVersion: apps/v1
-kind: Deployment
-metadata:
-  name: vllm-llama3-8b-instruct
-  namespace: default
-spec:
-  replicas: 1
-  selector:
-    matchLabels:
-      app: vllm-llama3-8b-instruct
-  template:
-    metadata:
-      labels:
-        app: vllm-llama3-8b-instruct
-    spec:
-      containers:
-      - name: vllm-sim
-        image: ghcr.io/llm-d/llm-d-inference-sim:v0.5.0
-        imagePullPolicy: IfNotPresent
-        args:
-        - --model
-        - base-model
-        - --port
-        - '8000'
-        - --max-loras
-        - '6'
-        - --lora-modules
-        - '{"name": "math-expert"}'
-        - '{"name": "science-expert"}'
-        - '{"name": "social-expert"}'
-        - '{"name": "humanities-expert"}'
-        - '{"name": "law-expert"}'
-        - '{"name": "general-expert"}'
-        env:
-        - name: POD_NAME
-          valueFrom:
-            fieldRef:
-              fieldPath: metadata.name
-        - name: NAMESPACE
-          valueFrom:
-            fieldRef:
-              fieldPath: metadata.namespace
-        ports:
-        - containerPort: 8000
-          name: http
-          protocol: TCP
-        resources:
-          requests:
-            cpu: 10m
----
-apiVersion: v1
-kind: Service
-metadata:
-  name: vllm-llama3-8b-instruct
-  namespace: default
-  labels:
-    app: vllm-llama3-8b-instruct
-spec:
-  type: ClusterIP
-  ports:
-  - port: 8000
-    targetPort: 8000
-    protocol: TCP
-  selector:
-    app: vllm-llama3-8b-instruct
+# Backend Configuration for AI Gateway
+#
+# This file defines the Backend and AIServiceBackend Custom Resources that connect
+# the AI Gateway to the llm-katan inference service (Qwen3-0.6B base model).
+#
+# NOTE: The actual llm-katan Deployment and Service are managed via Kustomize.
+# See: deploy/kubernetes/llm-katan/overlays/qwen-default-ns/
+#
+# Architecture:
+#   AIGatewayRoute (gwapi-resources.yaml)
+#       ↓ routes based on x-ai-eg-model header
+#   AIServiceBackend (this file)
+#       ↓ references
+#   Backend (this file)
+#       ↓ points to
+#   llm-katan-qwen Service (created by Kustomize overlay)
+#       ↓ targets
+#   llm-katan-qwen Pod (Qwen3-0.6B base model)
+#
+# IMPORTANT: llm-katan does not support LoRA adapters. Domain-specific headers
+# (e.g., x-ai-eg-model: math-expert) are received but ignored. All requests are
+# processed by the base Qwen3-0.6B model without specialization.
+#
+# The E2E tests validate routing and connectivity, not specialized model behavior.
+
 ---
 apiVersion: aigateway.envoyproxy.io/v1alpha1
 kind: AIServiceBackend
 metadata:
-  name: vllm-llama3-8b-instruct
+  name: llm-katan-qwen
   namespace: default
 spec:
   schema:
     name: OpenAI
   backendRef:
-    name: vllm-llama3-8b-instruct
+    name: llm-katan-qwen
     kind: Backend
     group: gateway.envoyproxy.io
 ---
 apiVersion: gateway.envoyproxy.io/v1alpha1
 kind: Backend
 metadata:
-  name: vllm-llama3-8b-instruct
+  name: llm-katan-qwen
   namespace: default
 spec:
   endpoints:
   - fqdn:
-      hostname: vllm-llama3-8b-instruct.default.svc.cluster.local
+      hostname: llm-katan-qwen.default.svc.cluster.local
       port: 8000

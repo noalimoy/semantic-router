@@ -70,60 +70,60 @@ spec:
         name: x-ai-eg-model
         value: math-expert
     backendRefs:
-    - name: vllm-llama3-8b-instruct
+    - name: llm-katan-qwen
     timeouts:
-      request: 60s
-      backendRequest: 60s
+      request: 180s  # Increased for CPU-based inference (llm-katan)
+      backendRequest: 180s
   - matches:
     - headers:
       - type: Exact
         name: x-ai-eg-model
         value: science-expert
     backendRefs:
-    - name: vllm-llama3-8b-instruct
+    - name: llm-katan-qwen
     timeouts:
-      request: 60s
-      backendRequest: 60s
+      request: 180s
+      backendRequest: 180s
   - matches:
     - headers:
       - type: Exact
         name: x-ai-eg-model
         value: social-expert
     backendRefs:
-    - name: vllm-llama3-8b-instruct
+    - name: llm-katan-qwen
     timeouts:
-      request: 60s
-      backendRequest: 60s
+      request: 180s
+      backendRequest: 180s
   - matches:
     - headers:
       - type: Exact
         name: x-ai-eg-model
         value: humanities-expert
     backendRefs:
-    - name: vllm-llama3-8b-instruct
+    - name: llm-katan-qwen
     timeouts:
-      request: 60s
-      backendRequest: 60s
+      request: 180s
+      backendRequest: 180s
   - matches:
     - headers:
       - type: Exact
         name: x-ai-eg-model
         value: law-expert
     backendRefs:
-    - name: vllm-llama3-8b-instruct
+    - name: llm-katan-qwen
     timeouts:
-      request: 60s
-      backendRequest: 60s
+      request: 180s
+      backendRequest: 180s
   - matches:
     - headers:
       - type: Exact
         name: x-ai-eg-model
         value: general-expert
     backendRefs:
-    - name: vllm-llama3-8b-instruct
+    - name: llm-katan-qwen
     timeouts:
-      request: 60s
-      backendRequest: 60s
+      request: 180s
+      backendRequest: 180s
 ---
 apiVersion: gateway.envoyproxy.io/v1alpha1
 kind: EnvoyPatchPolicy

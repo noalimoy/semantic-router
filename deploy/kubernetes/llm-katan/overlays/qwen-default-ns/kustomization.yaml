@@ -1,0 +1,47 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+metadata:
+  name: llm-katan-qwen-default-ns
+
+# Use base configuration
+resources:
+  - ../../base
+
+components:
+  - ../../components/common
+
+# Deploy to 'default' namespace (required for AI Gateway integration)
+namespace: default
+
+# Suffix to avoid naming conflicts with other LLM-KATAN deployments
+nameSuffix: -qwen
+
+patches:
+  # Patch 1: Update labels for identification
+  - target:
+      kind: Deployment
+      name: llm-katan
+    patch: |-
+      - op: add
+        path: /spec/selector/matchLabels/app
+        value: "llm-katan-qwen"
+      - op: add
+        path: /spec/template/metadata/labels/app
+        value: "llm-katan-qwen"
+      - op: add
+        path: /spec/template/metadata/labels/model-type
+        value: "qwen"
+
+  # Patch 2: Update Service selector
+  - target:
+      kind: Service
+      name: llm-katan
+    patch: |-
+      - op: add
+        path: /spec/selector/app
+        value: "llm-katan-qwen"
+      - op: add
+        path: /metadata/labels/model-type
+        value: "qwen"
+

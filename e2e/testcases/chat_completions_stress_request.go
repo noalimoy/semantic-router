@@ -130,7 +130,7 @@ func sendSingleRequest(ctx context.Context, requestID int, localPort string, ver
 	req.Header.Set("Content-Type", "application/json")
 
 	httpClient := &http.Client{
-		Timeout: 30 * time.Second,
+		Timeout: 120 * time.Second, // Increased for CPU-based inference (llm-katan)
 	}
 
 	resp, err := httpClient.Do(req)

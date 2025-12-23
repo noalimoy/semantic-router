@@ -62,7 +62,7 @@ func testChatCompletionsRequest(ctx context.Context, client *kubernetes.Clientse
 	req.Header.Set("Content-Type", "application/json")
 
 	httpClient := &http.Client{
-		Timeout: 30 * time.Second,
+		Timeout: 120 * time.Second, // Increased for CPU-based inference (llm-katan)
 	}
 
 	resp, err := httpClient.Do(req)

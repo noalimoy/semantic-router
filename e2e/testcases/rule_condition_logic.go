@@ -185,7 +185,7 @@ func testSingleRuleCondition(ctx context.Context, testCase RuleConditionCase, lo
 	}
 	req.Header.Set("Content-Type", "application/json")
 
-	httpClient := &http.Client{Timeout: 30 * time.Second}
+	httpClient := &http.Client{Timeout: 180 * time.Second}
 	resp, err := httpClient.Do(req)
 	if err != nil {
 		result.Error = fmt.Sprintf("failed to send request: %v", err)

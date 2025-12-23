@@ -221,9 +221,32 @@ func (p *Profile) deployEnvoyAIGateway(ctx context.Context, deployer *helm.Deplo
 }
 
 func (p *Profile) deployGatewayResources(ctx context.Context, opts *framework.SetupOptions) error {
-	// Apply base model
+	// NOTE: llm-katan does not support LoRA adapters - uses base model only
+	p.log("Deploying llm-katan (Qwen3-0.6B) to 'default' namespace...")
+	if err := p.kubectlApplyKustomize(ctx, opts.KubeConfig, "deploy/kubernetes/llm-katan/overlays/qwen-default-ns"); err != nil {
+		return fmt.Errorf("failed to apply llm-katan overlay: %w", err)
+	}
+
+	p.log("Waiting for llm-katan deployment to be ready...")
+	// Note: llm-katan needs time to:
+	// 1. Download Qwen3-0.6B model (~5-10 min)
+	// 2. Load model into memory (~2-3 min)
+	if err := p.waitForDeployment(ctx, opts.KubeConfig, "default", "llm-katan-qwen", 20*time.Minute); err != nil {
+		return fmt.Errorf("llm-katan deployment not ready: %w", err)
+	}
+
+	// CRITICAL: Wait for Service Endpoints to be populated
+	// Deployment Ready doesn't guarantee Readiness probe passed and Endpoints exist!
+	p.log("Waiting for llm-katan service endpoints to be ready...")
+	if err := p.waitForServiceEndpoints(ctx, opts.KubeConfig, "default", "llm-katan-qwen", 3*time.Minute); err != nil {
+		return fmt.Errorf("llm-katan-qwen service endpoints not ready: %w", err)
+	}
+
+	// Apply backend CRDs (AIServiceBackend and Backend)
+	// This creates the link between AI Gateway and llm-katan
+	p.log("Applying Backend CRDs for llm-katan...")
 	if err := p.kubectlApply(ctx, opts.KubeConfig, "deploy/kubernetes/ai-gateway/aigw-resources/base-model.yaml"); err != nil {
-		return fmt.Errorf("failed to apply base model: %w", err)
+		return fmt.Errorf("failed to apply backend CRDs: %w", err)
 	}
 
 	// Apply gateway API resources
@@ -317,6 +340,8 @@ func (p *Profile) cleanupGatewayResources(ctx context.Context, opts *framework.T
 	// Delete in reverse order
 	p.kubectlDelete(ctx, opts.KubeConfig, "deploy/kubernetes/ai-gateway/aigw-resources/gwapi-resources.yaml")
 	p.kubectlDelete(ctx, opts.KubeConfig, "deploy/kubernetes/ai-gateway/aigw-resources/base-model.yaml")
+	p.kubectlDeleteKustomize(ctx, opts.KubeConfig, "deploy/kubernetes/llm-katan/overlays/qwen-default-ns")
+
 	return nil
 }
 
@@ -324,8 +349,46 @@ func (p *Profile) kubectlApply(ctx context.Context, kubeConfig, manifest string)
 	return p.runKubectl(ctx, kubeConfig, "apply", "-f", manifest)
 }
 
+func (p *Profile) kubectlApplyKustomize(ctx context.Context, kubeConfig, path string) error {
+	return p.runKubectl(ctx, kubeConfig, "apply", "-k", path)
+}
+
 func (p *Profile) kubectlDelete(ctx context.Context, kubeConfig, manifest string) error {
 	return p.runKubectl(ctx, kubeConfig, "delete", "--ignore-not-found", "-f", manifest)
+}
+
+func (p *Profile) kubectlDeleteKustomize(ctx context.Context, kubeConfig, path string) error {
+	return p.runKubectl(ctx, kubeConfig, "delete", "--ignore-not-found", "-k", path)
+}
+
+func (p *Profile) waitForDeployment(ctx context.Context, kubeConfig, namespace, name string, timeout time.Duration) error {
+	deployer := helm.NewDeployer(kubeConfig, p.verbose)
+	return deployer.WaitForDeployment(ctx, namespace, name, timeout)
+}
+
+func (p *Profile) waitForServiceEndpoints(ctx context.Context, kubeConfig, namespace, name string, timeout time.Duration) error {
+	// Wait for service endpoints to be populated (Pod must pass readiness probe)
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		// Check if endpoints exist and have at least one address
+		args := []string{
+			"get", "endpoints", name,
+			"-n", namespace,
+			"--kubeconfig", kubeConfig,
+			"-o", "jsonpath={.subsets[*].addresses[*].ip}",
+		}
+		cmd := exec.CommandContext(ctx, "kubectl", args...)
+		output, err := cmd.Output()
+		if err == nil && len(output) > 0 {
+			// Endpoints exist and have at least one IP
+			if p.verbose {
+				fmt.Printf("[Profile] Service %s/%s has endpoints: %s\n", namespace, name, string(output))
+			}
+			return nil
+		}
+		time.Sleep(5 * time.Second)
+	}
+	return fmt.Errorf("service %s/%s endpoints not ready after %v", namespace, name, timeout)
 }
 
 func (p *Profile) runKubectl(ctx context.Context, kubeConfig string, args ...string) error {

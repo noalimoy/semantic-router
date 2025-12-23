@@ -124,11 +124,11 @@ spec:
 
           resources:
             requests:
-              memory: "3Gi"
-              cpu: "1"
-            limits:
-              memory: "6Gi"
+              memory: "4Gi"
               cpu: "2"
+            limits:
+              memory: "8Gi"  # Increased from 6Gi to handle stress test load
+              cpu: "4"       # Increased from 2 to handle 200+ requests
 
           securityContext:
             allowPrivilegeEscalation: false
