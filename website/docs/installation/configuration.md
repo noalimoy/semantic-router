@@ -47,6 +47,7 @@ vector_store:
   # llama_stack:
   #   endpoint: "http://localhost:8321"
   #   embedding_model: "sentence-transformers/all-MiniLM-L6-v2"
+  #   search_type: "hybrid"  # Options: "vector" (default), "hybrid"
 
 # Tool auto-selection
 tools:

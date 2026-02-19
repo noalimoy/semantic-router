@@ -86,6 +86,23 @@ var _ = Describe("LlamaStackBackend", func() {
 			Expect(b.embeddingModel).To(Equal("all-MiniLM-L6-v2"))
 			Expect(b.embeddingDim).To(Equal(384))
 		})
+
+		It("should default searchType to 'vector' when not specified", func() {
+			b, err := NewLlamaStackBackend(LlamaStackBackendConfig{
+				Endpoint: "http://localhost:8321",
+			})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(b.searchType).To(Equal("vector"))
+		})
+
+		It("should accept 'hybrid' search type", func() {
+			b, err := NewLlamaStackBackend(LlamaStackBackendConfig{
+				Endpoint:   "http://localhost:8321",
+				SearchType: "hybrid",
+			})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(b.searchType).To(Equal("hybrid"))
+		})
 	})
 
 	Context("CreateCollection", func() {
@@ -630,6 +647,60 @@ var _ = Describe("LlamaStackBackend", func() {
 			Expect(receivedPath).To(Equal("/v1/vector_stores/vs_gen_abc123/search"))
 			Expect(receivedBody["query"]).To(Equal("what is kubernetes?"))
 			Expect(receivedBody["max_num_results"]).To(BeNumerically("==", 5))
+			Expect(receivedBody).NotTo(HaveKey("ranking_options"))
+		})
+
+		It("should include ranking_options with rrf ranker for hybrid search", func() {
+			var receivedBody map[string]interface{}
+
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				body, _ := io.ReadAll(r.Body)
+				_ = json.Unmarshal(body, &receivedBody)
+				w.WriteHeader(http.StatusOK)
+				_, _ = w.Write([]byte(`{"data": []}`))
+			}))
+			defer server.Close()
+
+			b, err := NewLlamaStackBackend(LlamaStackBackendConfig{
+				Endpoint:   server.URL,
+				SearchType: "hybrid",
+			})
+			Expect(err).NotTo(HaveOccurred())
+			b.storeIDs["my-store"] = "vs_gen_abc123"
+
+			filter := map[string]interface{}{"_query_text": "what is kubernetes?"}
+			_, err = b.Search(context.Background(), "my-store", nil, 5, 0, filter)
+			Expect(err).NotTo(HaveOccurred())
+
+			Expect(receivedBody).To(HaveKey("ranking_options"))
+			opts, ok := receivedBody["ranking_options"].(map[string]interface{})
+			Expect(ok).To(BeTrue())
+			Expect(opts["ranker"]).To(Equal("rrf"))
+		})
+
+		It("should not include ranking_options for default vector search", func() {
+			var receivedBody map[string]interface{}
+
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				body, _ := io.ReadAll(r.Body)
+				_ = json.Unmarshal(body, &receivedBody)
+				w.WriteHeader(http.StatusOK)
+				_, _ = w.Write([]byte(`{"data": []}`))
+			}))
+			defer server.Close()
+
+			b, err := NewLlamaStackBackend(LlamaStackBackendConfig{
+				Endpoint:   server.URL,
+				SearchType: "vector",
+			})
+			Expect(err).NotTo(HaveOccurred())
+			b.storeIDs["my-store"] = "vs_gen_abc123"
+
+			filter := map[string]interface{}{"_query_text": "kubernetes"}
+			_, err = b.Search(context.Background(), "my-store", nil, 5, 0, filter)
+			Expect(err).NotTo(HaveOccurred())
+
+			Expect(receivedBody).NotTo(HaveKey("ranking_options"))
 		})
 
 		It("should parse results correctly", func() {
