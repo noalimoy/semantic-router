@@ -1265,7 +1265,8 @@ func (c *Classifier) EvaluateAllSignalsWithContext(text string, contextText stri
 	}
 
 	results := &SignalResults{
-		Metrics: &SignalMetricsCollection{}, // Always initialize, no overhead
+		Metrics:           &SignalMetricsCollection{},
+		SignalConfidences: make(map[string]float64),
 	}
 
 	var wg sync.WaitGroup
@@ -1343,11 +1344,6 @@ func (c *Classifier) EvaluateAllSignalsWithContext(text string, contextText stri
 					// Append rule name to the matched list
 					results.MatchedEmbeddingRules = append(results.MatchedEmbeddingRules, mr.RuleName)
 
-					// Store real similarity score for this rule
-					// The Decision Engine will use this instead of hardcoded 1.0
-					if results.SignalConfidences == nil {
-						results.SignalConfidences = make(map[string]float64)
-					}
 					results.SignalConfidences["embedding:"+mr.RuleName] = mr.Score
 
 					logging.Infof("[Signal Computation] Embedding match: rule=%q, score=%.4f, method=%s",
@@ -1361,47 +1357,111 @@ func (c *Classifier) EvaluateAllSignalsWithContext(text string, contextText stri
 	}
 
 	// Evaluate domain rules (category classification) in parallel (only if used in decisions)
+	// When the backend supports full probability distributions (currently ModernBERT only),
+	// uses entropy analysis to return multiple matched categories for AND conditions.
+	// Other backends (BERT-base, mmBERT-32K) fall back to top-1 classification.
 	if isSignalTypeUsed(usedSignals, config.SignalTypeDomain) && c.IsCategoryEnabled() && c.categoryInference != nil && c.CategoryMapping != nil {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
 			start := time.Now()
-			result, err := c.categoryInference.Classify(textForSignal(config.SignalTypeDomain))
+			domainResult, err := c.categoryInference.ClassifyWithProbabilities(textForSignal(config.SignalTypeDomain))
+			if err != nil {
+				// ClassifyWithProbabilities may fail if ModernBERT is not initialized (e.g., BERT-base config).
+				// Fall back to Classify() which returns top-1 only (no probability distribution).
+				logging.Infof("[Signal Computation] ClassifyWithProbabilities unavailable, falling back to Classify: %v", err)
+				basicResult, basicErr := c.categoryInference.Classify(textForSignal(config.SignalTypeDomain))
+				if basicErr != nil {
+					err = basicErr
+				} else {
+					domainResult = candle_binding.ClassResultWithProbs{
+						Class:      basicResult.Class,
+						Confidence: basicResult.Confidence,
+					}
+					err = nil
+				}
+			}
 			elapsed := time.Since(start)
 			latencySeconds := elapsed.Seconds()
 
-			var categoryName string
+			categoryName := ""
 			if err == nil {
-				// Map class index to category name
-				if name, ok := c.CategoryMapping.GetCategoryFromIndex(result.Class); ok {
-					categoryName = name
+				if name, ok := c.CategoryMapping.GetCategoryFromIndex(domainResult.Class); ok {
+					categoryName = c.translateMMLUToGeneric(name)
 				}
 			}
 
 			// Record signal extraction metrics
 			metrics.RecordSignalExtraction(config.SignalTypeDomain, categoryName, latencySeconds)
 
-			// Record metrics (use microseconds for better precision)
+			// Record metrics
 			results.Metrics.Domain.ExecutionTimeMs = float64(elapsed.Microseconds()) / 1000.0
 			if categoryName != "" && err == nil {
-				results.Metrics.Domain.Confidence = float64(result.Confidence)
+				results.Metrics.Domain.Confidence = float64(domainResult.Confidence)
 			}
-
 			logging.Infof("[Signal Computation] Domain signal evaluation completed in %v", elapsed)
+
 			if err != nil {
 				logging.Errorf("domain rule evaluation failed: %v", err)
-			} else if result.Confidence >= c.Config.CategoryModel.Threshold {
-				// Only add domain if confidence meets threshold
-				// Without this check, low-confidence misclassifications can still match decisions,
-				// causing incorrect routing for typo-laden text
-				if categoryName != "" {
-					// Record signal match
-					metrics.RecordSignalMatch(config.SignalTypeDomain, categoryName)
+			} else if len(domainResult.Probabilities) > 0 {
+				entropyResult := entropy.AnalyzeEntropy(domainResult.Probabilities)
+				logging.Infof("[Signal Computation] Domain entropy analysis: entropy=%.3f, normalized=%.3f, uncertainty=%s",
+					entropyResult.Entropy, entropyResult.NormalizedEntropy, entropyResult.UncertaintyLevel)
 
-					mu.Lock()
-					results.MatchedDomainRules = append(results.MatchedDomainRules, categoryName)
-					mu.Unlock()
+				// Build category name list for each probability index
+				categoryNames := make([]string, len(domainResult.Probabilities))
+				for i := range domainResult.Probabilities {
+					if name, ok := c.CategoryMapping.GetCategoryFromIndex(i); ok {
+						categoryNames[i] = c.translateMMLUToGeneric(name)
+					}
 				}
+
+				threshold := c.Config.CategoryModel.Threshold
+
+				// Determine how many categories to return based on uncertainty level:
+				// - Low uncertainty  → model is confident → return only top-1
+				// - High uncertainty → model sees multiple domains → return all above threshold
+				var matchedCategories []entropy.CategoryProbability
+
+				switch entropyResult.UncertaintyLevel {
+				case "very_low", "low":
+					if domainResult.Confidence >= threshold && categoryName != "" {
+						matchedCategories = []entropy.CategoryProbability{
+							{Category: categoryName, Probability: domainResult.Confidence},
+						}
+					}
+
+				default: // "medium", "high", "very_high"
+					for i, prob := range domainResult.Probabilities {
+						if prob >= threshold && i < len(categoryNames) && categoryNames[i] != "" {
+							matchedCategories = append(matchedCategories, entropy.CategoryProbability{
+								Category:    categoryNames[i],
+								Probability: prob,
+							})
+						}
+					}
+				}
+
+				mu.Lock()
+				for _, cat := range matchedCategories {
+					metrics.RecordSignalMatch(config.SignalTypeDomain, cat.Category)
+					results.MatchedDomainRules = append(results.MatchedDomainRules, cat.Category)
+					results.SignalConfidences["domain:"+cat.Category] = float64(cat.Probability)
+				}
+				mu.Unlock()
+
+				logging.Infof("[Signal Computation] Domain signal matched %d categories (uncertainty=%s): %v",
+					len(matchedCategories), entropyResult.UncertaintyLevel, results.MatchedDomainRules)
+
+			} else if domainResult.Confidence >= c.Config.CategoryModel.Threshold && categoryName != "" {
+				// Fallback: no probability distribution available (e.g., mmBERT-32K),
+				// behave like the original top-1 logic with threshold check
+				metrics.RecordSignalMatch(config.SignalTypeDomain, categoryName)
+
+				mu.Lock()
+				results.MatchedDomainRules = append(results.MatchedDomainRules, categoryName)
+				results.SignalConfidences["domain:"+categoryName] = float64(domainResult.Confidence)
+				mu.Unlock()
 			}
 		}()
 	} else if !isSignalTypeUsed(usedSignals, config.SignalTypeDomain) {
